@@ -31,7 +31,7 @@ class tokenizer:
     def decoding(self, encoded_input: list[int]) -> str:
         decoded_input = "" 
         for index in encoded_input:
-            decoded_input += self.index_vocab_mapping[index]
-        return decoded_input 
+            decoded_input += self.index_vocab_mapping[index] + " "
+        return decoded_input[:-1] 
         #tokens = [self.index_vocab_mapping[i] for i in encoded_input if self.index_vocab_mapping[i] not in {"<s>", "</s>", "<PAD>"}]
         #return " ".join(tokens)
