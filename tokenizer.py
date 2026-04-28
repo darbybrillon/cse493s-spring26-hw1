@@ -4,7 +4,7 @@ import numpy as np
 <s> = begining of sentence token
 <\s> = end of sentence token
 <UNK> = unknown token
-<PAD> = begining of sentence token
+<PAD> = padding token
 """
 
 class tokenizer:
