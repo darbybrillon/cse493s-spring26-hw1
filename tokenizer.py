@@ -2,7 +2,7 @@ import numpy as np
 
 """
 <s> = begining of sentence token
-<\s> = end of sentence token
+</s> = end of sentence token
 <UNK> = unknown token
 <PAD> = padding token
 """
