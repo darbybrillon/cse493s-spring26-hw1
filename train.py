@@ -131,7 +131,11 @@ def train(
         mask_fn:Callable = modulo_answer_mask,
         output_dir:str = None,
         intermediate_ckpt:bool = True,
-        verbose:bool = False):
+        verbose:bool = False,
+        weight_decay:float = 1.0,
+        beta1:float = 0.9,
+        beta2:float = 0.98,
+        warmup_steps:int = 10):
     
     device = 'cuda' if torch.cuda.is_available() else "cpu"
     random.seed(seed)
@@ -161,7 +165,7 @@ def train(
     )
 
     model = GPT(config).to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, betas=(beta1, beta2), weight_decay=weight_decay)
 
     ckpt_iter = epochs // 2
 
@@ -180,14 +184,26 @@ def train(
         except ImportError:
             progress = None
 
+    global_step = 0
     for i in epoch_iter:
 
         model.train()
         training_loss = 0
         correct = 0
         total = 0
+
         for batch in train_loader:
             training_loss, correct, total, loss = __infer_step(batch, model, training_loss, correct, total, device)
+            
+            global_step += 1
+            if warmup_steps > 0 and global_step <= warmup_steps:
+                lr = learning_rate * global_step / warmup_steps
+            else:
+                lr = learning_rate
+
+            for param_group in optimizer.param_groups:
+                param_group["lr"] = lr
+
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
