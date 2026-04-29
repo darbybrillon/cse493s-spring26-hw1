@@ -1,12 +1,11 @@
 import torch
-from torch.nn import functional as F
 from model import GPT, GPTConfig
-from pathlib import Path
 from tokenizer import tokenizer
 
 
 """
-Assumes model is saved as: torch.save({"model_config": config_dict, "model": model.state_dict()}, "ckpt.pt")
+Assumes model is saved as:
+torch.save({"model_config": config_dict, "model": model.state_dict(), "tokenizer": tokenizer_state}, "ckpt.pt")
 """
 
 def load_model(checkpoint_loc: str, device="cpu") -> GPT:
@@ -18,21 +17,48 @@ def load_model(checkpoint_loc: str, device="cpu") -> GPT:
     model.eval()
     return model
 
-def generate_output(model: GPT, tokenizer, input: str, output_size: int) -> list[str]: # may need to increase output size by two to account for SOS and EOS tokens
-    tokens = tokenizer.encode(input)
-    tokens = torch.tensor([tokens], dtype=torch.long)
+def load_tokenizer(checkpoint_loc: str) -> tokenizer:
+    checkpoint = torch.load(checkpoint_loc, map_location="cpu")
+    tok = tokenizer()
+    state = checkpoint.get("tokenizer")
+    if state is None:
+        return tok
+    tok.vocab = set(state["vocab"])
+    tok.vocab_index_mapping = state["vocab_index_mapping"]
+    tok.index_vocab_mapping = state["index_vocab_mapping"]
+    return tok
+
+def load_model_and_tokenizer(checkpoint_loc: str, device="cpu") -> tuple[GPT, tokenizer]:
+    return load_model(checkpoint_loc, device), load_tokenizer(checkpoint_loc)
+
+def generate_output(
+    model: GPT,
+    tokenizer,
+    input: str,
+    output_size: int,
+    add_eos_to_prompt: bool = False,
+) -> str: # may need to increase output size by two to account for SOS and EOS tokens
+    tokens = [tokenizer.vocab_index_mapping["<s>"]]
+    tokens += [
+        tokenizer.vocab_index_mapping.get(token, tokenizer.vocab_index_mapping["<UNK>"])
+        for token in input.lower().split()
+    ]
+    if add_eos_to_prompt:
+        tokens.append(tokenizer.vocab_index_mapping["</s>"])
+    device = next(model.parameters()).device
+    tokens = torch.tensor([tokens], dtype=torch.long, device=device)
     with torch.no_grad():
         for _ in range(output_size):
             output = model(tokens)
-            prediction = torch.multinomial(F.softmax(output[:, -1, :], dim=-1), num_samples=1)
+            logits = output[:, -1, :]
+            prediction = logits.argmax(dim=-1, keepdim=True)
             tokens = torch.cat([tokens, prediction], dim=1)
-    return tokenizer.decode(tokens[0].tolist())
+    return tokenizer.decoding(tokens[0].tolist())
 
 def main() -> None:
     file_name = "file name"
     input = "I love machine learning"
-    tokenizer = tokenizer()
-    model = load_model(file_name)
+    model, tokenizer = load_model_and_tokenizer(file_name)
     output = generate_output(model, tokenizer, input, 4)
     print(output)   
 
