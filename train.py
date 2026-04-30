@@ -305,4 +305,4 @@ def train(
     metrics["run_dir"] = str(run_dir)
     _save_metrics(run_dir / "metrics.json", metrics)
 
-    return metrics
+    return metrics, model

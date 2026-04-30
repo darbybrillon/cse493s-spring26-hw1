@@ -5,6 +5,7 @@ import random
 def generate_data(
         p:int = 97, 
         train_split:float = 0.8, 
+        val_split:float = 0.20,
         ops:List[str] = ['+', '-', '/'],
         seed:int = 42,
         output_dir:str = None) -> Tuple[List[str]]:
@@ -28,18 +29,21 @@ def generate_data(
                 data.append(f'{a} {op} {b} = {res}')
 
     random.shuffle(data)
-    split = int(train_split * len(data))
-    train = data[:split]
-    test = data[split:]
+    train_end = int(train_split * len(data))
+    val_end = train_end + int(val_split * len(data))
+    train = data[:train_end]
+    val = data[train_end:val_end]
+    test = data[val_end:]
 
     if output_dir:
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
         with open(output_path / "train.txt", "w") as f:
             f.write("\n".join(train))
+        with open(output_path / "val.txt", "w") as f:
+            f.write("\n".join(val))
         with open(output_path / "test.txt", "w") as f:
             f.write("\n".join(test))
 
-    return (train, test)
-
+    return (train, val, test)
 
