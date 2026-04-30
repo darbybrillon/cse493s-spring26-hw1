@@ -1,11 +1,13 @@
 from typing import List, Tuple
+from pathlib import Path
 import random
 
 def generate_data(
         p:int = 97, 
         train_split:float = 0.8, 
         ops:List[str] = ['+', '-', '/'],
-        seed:int = 42) -> Tuple[List[str]]:
+        seed:int = 42,
+        output_dir:str = None) -> Tuple[List[str]]:
     
     random.seed(seed)
     data = []
@@ -29,7 +31,15 @@ def generate_data(
     split = int(train_split * len(data))
     train = data[:split]
     test = data[split:]
-    return (train, test)
 
+    if output_dir:
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+        with open(output_path / "train.txt", "w") as f:
+            f.write("\n".join(train))
+        with open(output_path / "test.txt", "w") as f:
+            f.write("\n".join(test))
+
+    return (train, test)
 
 

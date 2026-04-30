@@ -24,14 +24,13 @@ def _save_checkpoint(path, config, model, tok):
     }, path)
 
 
-def _save_metrics(path, val_losses, training_losses, training_accs, val_accs):
+OPERATORS = ["+", "-", "/"]
+OPERATOR_TO_ID = {op: i for i, op in enumerate(OPERATORS)}
+
+
+def _save_metrics(path, metrics):
     with open(path, "w") as f:
-        json.dump({
-            "val_losses": val_losses,
-            "training_losses": training_losses,
-            "training_accs": training_accs,
-            "val_accs": val_accs,
-        }, f, indent=2)
+        json.dump(metrics, f, indent=2)
 
 
 def _new_run_dir(output_dir=None):
@@ -66,17 +65,20 @@ def token_after_marker(marker):
         if marker_idx < len(mask):
             mask[marker_idx] = 1
         return mask
+    mask_fn.marker = marker
     return mask_fn
 
 
 modulo_answer_mask = token_after_marker("=")
+modulo_answer_mask.is_modulo_answer_mask = True
 
 
 class Custom_Dataset(Dataset):
-    def __init__(self, strings, tok, mask_fn):
+    def __init__(self, strings, tok, mask_fn, collect_operator_metrics=False):
         self.strings = strings
         self.tok = tok
         self.mask_fn = mask_fn
+        self.collect_operator_metrics = collect_operator_metrics
 
     def __len__(self):
         return len(self.strings)
@@ -85,13 +87,44 @@ class Custom_Dataset(Dataset):
         text = self.strings[idx]
         ids = self.tok.encoding(text)
         mask = self.mask_fn(ids, text, self.tok)
-        return torch.tensor(ids, dtype=torch.long), torch.tensor(mask, dtype=torch.float)
+        op_id = -1
+        if self.collect_operator_metrics:
+            for op in OPERATORS:
+                if f" {op} " in text:
+                    op_id = OPERATOR_TO_ID[op]
+                    break
+        return torch.tensor(ids, dtype=torch.long), torch.tensor(mask, dtype=torch.float), torch.tensor(op_id, dtype=torch.long)
 
 
-def __infer_step(batch, model, cum_loss, correct, total, device):
-    batch, loss_mask = batch
+def _empty_epoch_stats():
+    return {"loss_sum": 0.0, "correct": 0, "total": 0.0}
+
+
+def _empty_operator_epoch_stats():
+    return {op: _empty_epoch_stats() for op in OPERATORS}
+
+
+def _append_epoch_metrics(metrics, split, stats, operator_stats=None):
+    metrics["combined"][f"{split}_losses"].append(stats["loss_sum"] / stats["total"])
+    metrics["combined"][f"{split}_accs"].append(stats["correct"] / stats["total"])
+
+    if operator_stats is None:
+        return
+
+    for op, op_stats in operator_stats.items():
+        if op_stats["total"] == 0:
+            metrics["by_operator"][op][f"{split}_losses"].append(None)
+            metrics["by_operator"][op][f"{split}_accs"].append(None)
+        else:
+            metrics["by_operator"][op][f"{split}_losses"].append(op_stats["loss_sum"] / op_stats["total"])
+            metrics["by_operator"][op][f"{split}_accs"].append(op_stats["correct"] / op_stats["total"])
+
+
+def __infer_step(batch, model, stats, device, operator_stats=None):
+    batch, loss_mask, op_ids = batch
     batch = batch.to(device)
     loss_mask = loss_mask.to(device)
+    op_ids = op_ids.to(device)
     x = batch[:, :-1]
     y = batch[:, 1:]
 
@@ -105,13 +138,27 @@ def __infer_step(batch, model, cum_loss, correct, total, device):
     if num_masked.item() == 0:
         raise ValueError("loss mask must select at least one token in each batch")
     loss = (token_losses * loss_mask).sum() / num_masked
-    cum_loss += (token_losses * loss_mask).sum().item()
 
     preds = logits.argmax(dim=-1)
-    correct += ((preds == y) * loss_mask.bool()).sum().item()
-    total += num_masked.item()
+    correct_by_token = ((preds == y) * loss_mask.bool()).float()
 
-    return (cum_loss, correct, total, loss)
+    loss_by_example = (token_losses * loss_mask).sum(dim=1)
+    correct_by_example = correct_by_token.sum(dim=1)
+    total_by_example = loss_mask.sum(dim=1)
+
+    stats["loss_sum"] += loss_by_example.sum().item()
+    stats["correct"] += correct_by_example.sum().item()
+    stats["total"] += total_by_example.sum().item()
+
+    if operator_stats is not None:
+        for op, op_id in OPERATOR_TO_ID.items():
+            op_mask = op_ids == op_id
+            if op_mask.any():
+                operator_stats[op]["loss_sum"] += loss_by_example[op_mask].sum().item()
+                operator_stats[op]["correct"] += correct_by_example[op_mask].sum().item()
+                operator_stats[op]["total"] += total_by_example[op_mask].sum().item()
+
+    return loss
 
 
 def train(
@@ -148,10 +195,11 @@ def train(
     
     
     run_dir = _new_run_dir(output_dir)
+    collect_operator_metrics = getattr(mask_fn, "is_modulo_answer_mask", False)
 
-    train_ds = Custom_Dataset(train_data, tok, mask_fn)
+    train_ds = Custom_Dataset(train_data, tok, mask_fn, collect_operator_metrics)
     train_loader = DataLoader(train_ds, batch_size=batch_size)
-    val_ds = Custom_Dataset(val_data, tok, mask_fn)
+    val_ds = Custom_Dataset(val_data, tok, mask_fn, collect_operator_metrics)
     val_loader = DataLoader(val_ds, batch_size=batch_size)
 
     config = GPTConfig(
@@ -169,10 +217,24 @@ def train(
 
     ckpt_iter = epochs // 2
 
-    training_accs = []
-    training_losses = []
-    val_accs = []
-    val_losses = []
+    metrics = {
+        "combined": {
+            "train_losses": [],
+            "train_accs": [],
+            "val_losses": [],
+            "val_accs": [],
+        },
+    }
+    if collect_operator_metrics:
+        metrics["by_operator"] = {
+            op: {
+                "train_losses": [],
+                "train_accs": [],
+                "val_losses": [],
+                "val_accs": [],
+            }
+            for op in OPERATORS
+        }
 
     epoch_iter = range(epochs)
     progress = None
@@ -188,12 +250,11 @@ def train(
     for i in epoch_iter:
 
         model.train()
-        training_loss = 0
-        correct = 0
-        total = 0
+        train_stats = _empty_epoch_stats()
+        train_operator_stats = _empty_operator_epoch_stats() if collect_operator_metrics else None
 
         for batch in train_loader:
-            training_loss, correct, total, loss = __infer_step(batch, model, training_loss, correct, total, device)
+            loss = __infer_step(batch, model, train_stats, device, train_operator_stats)
             
             global_step += 1
             if warmup_steps > 0 and global_step <= warmup_steps:
@@ -207,36 +268,31 @@ def train(
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-        
-        training_losses.append(training_loss/total)
-        training_accs.append(correct/total)
+        _append_epoch_metrics(metrics, "train", train_stats, train_operator_stats)
 
 
         model.eval()
-        val_loss = 0
-        correct = 0
-        total = 0
+        val_stats = _empty_epoch_stats()
+        val_operator_stats = _empty_operator_epoch_stats() if collect_operator_metrics else None
         with torch.no_grad():
             for batch in val_loader:
-                val_loss, correct, total, _ = __infer_step(batch, model, val_loss, correct, total, device)
-                
-        val_losses.append(val_loss/total)
-        val_accs.append(correct/total)
+                __infer_step(batch, model, val_stats, device, val_operator_stats)
+        _append_epoch_metrics(metrics, "val", val_stats, val_operator_stats)
 
         if progress is not None:
             progress.set_postfix(
-                train_loss=training_losses[-1],
-                train_acc=training_accs[-1],
-                val_loss=val_losses[-1],
-                val_acc=val_accs[-1],
+                train_loss=metrics["combined"]["train_losses"][-1],
+                train_acc=metrics["combined"]["train_accs"][-1],
+                val_loss=metrics["combined"]["val_losses"][-1],
+                val_acc=metrics["combined"]["val_accs"][-1],
             )
         elif verbose:
             print(
                 f"epoch {i + 1}/{epochs} "
-                f"train_loss={training_losses[-1]:.6f} "
-                f"train_acc={training_accs[-1]:.4f} "
-                f"val_loss={val_losses[-1]:.6f} "
-                f"val_acc={val_accs[-1]:.4f}"
+                f"train_loss={metrics['combined']['train_losses'][-1]:.6f} "
+                f"train_acc={metrics['combined']['train_accs'][-1]:.4f} "
+                f"val_loss={metrics['combined']['val_losses'][-1]:.6f} "
+                f"val_acc={metrics['combined']['val_accs'][-1]:.4f}"
             )
 
         completed_epochs = i + 1
@@ -246,6 +302,7 @@ def train(
     
 
     _save_checkpoint(run_dir / f'ckpt_{epochs}_epochs.pt', config, model, tok)
-    _save_metrics(run_dir / "metrics.json", val_losses, training_losses, training_accs, val_accs)
+    metrics["run_dir"] = str(run_dir)
+    _save_metrics(run_dir / "metrics.json", metrics)
 
-    return (val_losses, training_losses, training_accs, val_accs, str(run_dir))
+    return metrics

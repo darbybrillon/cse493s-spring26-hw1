@@ -1,3 +1,4 @@
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 from inference import generate_output, load_model_and_tokenizer
@@ -6,6 +7,8 @@ from train import all_tokens_mask, suffix_after_n_input_tokens, train
 
 
 SANITY_TEXT = "I love machine learning"
+SANITY_DIR = Path("sanity_checks")
+LOG_FILE = SANITY_DIR / "sanity_checks.log"
 
 
 def _build_tokenizer(data):
@@ -23,7 +26,7 @@ def run_all_tokens_sanity():
     tok = _build_tokenizer(data)
     epochs = 1000
 
-    val_losses, train_losses, train_accs, val_accs, run_dir = train(
+    metrics = train(
         tok=tok,
         train_data=data,
         val_data=data,
@@ -42,6 +45,8 @@ def run_all_tokens_sanity():
         intermediate_ckpt=False,
         verbose=True,
     )
+    combined = metrics["combined"]
+    run_dir = metrics["run_dir"]
 
     model, tok = load_model_and_tokenizer(str(_final_checkpoint(run_dir, epochs)))
     generated = generate_output(model, tok, "", output_size=5)
@@ -49,10 +54,10 @@ def run_all_tokens_sanity():
     return {
         "name": "all_tokens",
         "run_dir": run_dir,
-        "final_train_loss": train_losses[-1],
-        "final_val_loss": val_losses[-1],
-        "final_train_acc": train_accs[-1],
-        "final_val_acc": val_accs[-1],
+        "final_train_loss": combined["train_losses"][-1],
+        "final_val_loss": combined["val_losses"][-1],
+        "final_train_acc": combined["train_accs"][-1],
+        "final_val_acc": combined["val_accs"][-1],
         "generated": generated,
     }
 
@@ -62,7 +67,7 @@ def run_suffix_sanity():
     tok = _build_tokenizer(data)
     epochs = 1000
 
-    val_losses, train_losses, train_accs, val_accs, run_dir = train(
+    metrics = train(
         tok=tok,
         train_data=data,
         val_data=data,
@@ -81,6 +86,8 @@ def run_suffix_sanity():
         intermediate_ckpt=False,
         verbose=True,
     )
+    combined = metrics["combined"]
+    run_dir = metrics["run_dir"]
 
     model, tok = load_model_and_tokenizer(str(_final_checkpoint(run_dir, epochs)))
     generated = generate_output(model, tok, "I love machine", output_size=2)
@@ -88,23 +95,26 @@ def run_suffix_sanity():
     return {
         "name": "suffix_after_3",
         "run_dir": run_dir,
-        "final_train_loss": train_losses[-1],
-        "final_val_loss": val_losses[-1],
-        "final_train_acc": train_accs[-1],
-        "final_val_acc": val_accs[-1],
+        "final_train_loss": combined["train_losses"][-1],
+        "final_val_loss": combined["val_losses"][-1],
+        "final_train_acc": combined["train_accs"][-1],
+        "final_val_acc": combined["val_accs"][-1],
         "generated": generated,
     }
 
 
 def main():
-    for result in (run_all_tokens_sanity(), run_suffix_sanity()):
-        print(f"{result['name']}:")
-        print(f"  run_dir: {result['run_dir']}")
-        print(f"  final_train_loss: {result['final_train_loss']:.6f}")
-        print(f"  final_val_loss: {result['final_val_loss']:.6f}")
-        print(f"  final_train_acc: {result['final_train_acc']:.4f}")
-        print(f"  final_val_acc: {result['final_val_acc']:.4f}")
-        print(f"  generated: {result['generated']}")
+    SANITY_DIR.mkdir(parents=True, exist_ok=True)
+    with open(LOG_FILE, "w") as log_file:
+        with redirect_stdout(log_file), redirect_stderr(log_file):
+            for result in (run_all_tokens_sanity(), run_suffix_sanity()):
+                print(f"{result['name']}:")
+                print(f"  run_dir: {result['run_dir']}")
+                print(f"  final_train_loss: {result['final_train_loss']:.6f}")
+                print(f"  final_val_loss: {result['final_val_loss']:.6f}")
+                print(f"  final_train_acc: {result['final_train_acc']:.4f}")
+                print(f"  final_val_acc: {result['final_val_acc']:.4f}")
+                print(f"  generated: {result['generated']}")
 
 
 if __name__ == "__main__":
