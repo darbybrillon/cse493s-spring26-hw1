@@ -21,12 +21,18 @@ def _final_checkpoint(run_dir, epochs):
     return Path(run_dir) / f"ckpt_{epochs}_epochs.pt"
 
 
+def _metrics_only(train_result):
+    if isinstance(train_result, tuple):
+        return train_result[0]
+    return train_result
+
+
 def run_all_tokens_sanity():
     data = [SANITY_TEXT]
     tok = _build_tokenizer(data)
     epochs = 1000
 
-    metrics = train(
+    metrics = _metrics_only(train(
         tok=tok,
         train_data=data,
         val_data=data,
@@ -44,7 +50,7 @@ def run_all_tokens_sanity():
         output_dir="sanity_checks/all_toks",
         intermediate_ckpt=False,
         verbose=True,
-    )
+    ))
     combined = metrics["combined"]
     run_dir = metrics["run_dir"]
 
@@ -67,7 +73,7 @@ def run_suffix_sanity():
     tok = _build_tokenizer(data)
     epochs = 1000
 
-    metrics = train(
+    metrics = _metrics_only(train(
         tok=tok,
         train_data=data,
         val_data=data,
@@ -85,7 +91,7 @@ def run_suffix_sanity():
         output_dir="sanity_checks/suffix3",
         intermediate_ckpt=False,
         verbose=True,
-    )
+    ))
     combined = metrics["combined"]
     run_dir = metrics["run_dir"]
 
